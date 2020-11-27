@@ -18,7 +18,7 @@ package cats.effect.std
 
 import cats.effect.kernel.{Outcome, Resource}
 
-trait ResourceManager[F[_], K, V] {
+trait ResourceMap[F[_], K, V] {
 
   /** Submit a resource to be managed, when allocated the managed value will
     * be available at `key`.
@@ -62,18 +62,18 @@ trait ResourceManager[F[_], K, V] {
   def join(key: K): F[Option[V]]
 }
 
-object ResourceManager {
-  /** A `ResourceManager` that eagerly allocates resources on calls to `manage`. */
-  def eager[F[_], K, V]: Resource[F, ResourceManager[F, K, V]] =
+object ResourceMap {
+  /** A `ResourceMap` that eagerly allocates resources on calls to `manage`. */
+  def eager[F[_], K, V]: Resource[F, ResourceMap[F, K, V]] =
     apply(false)
 
-  /** A `ResourceManager` that allocates resources on first access. */
-  def lazy[F[_], K, V]: Resource[F, ResourceManager[F, K, V]] =
+  /** A `ResourceMap` that allocates resources on first access. */
+  def lazy[F[_], K, V]: Resource[F, ResourceMap[F, K, V]] =
     apply(true)
 
-  private def apply[F[_], K, V](lazyAllocation: Boolean): Resource[F, ResourceManager[F, K, V]] = ???
+  private def apply[F[_], K, V](lazyAllocation: Boolean): Resource[F, ResourceMap[F, K, V]] = ???
 
-  private final class Impl[F[_], K, V](lazyAllocation: Boolean) extends ResourceManager[F, K, V] {
+  private final class Impl[F[_], K, V](lazyAllocation: Boolean) extends ResourceMap[F, K, V] {
     // registered - lazy allocation, 
     // acquiring
     //
