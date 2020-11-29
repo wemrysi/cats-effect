@@ -18,15 +18,13 @@ package cats.effect.std
 
 import cats.effect.kernel.{Outcome, Resource}
 
-trait ResourceMap[F[_], K, V] {
+trait ResourceManager[F[_], K, V] {
 
-  /** Submit a resource to be managed, when allocated the managed value will
-    * be available at `key`.
+  /** Submit a resource to be managed, making the allocated resource
+    * available at `key`.
     *
-    * If a resource already exists for `key`, its finalizers will be run and
-    * subsequent requests for `key` will return the new resource.
-    *
-    * If allocation of the resource fails, it will be retried on next access.
+    * If a resource already exists for `key`, it is released and replaced by
+    * the new resource.
     */
   def manage(key: K, resource: Resource[F, V]): F[Unit]
 
@@ -43,47 +41,131 @@ trait ResourceMap[F[_], K, V] {
   def -=(key: K): F[Unit] =
     release(key)
 
-  /** Retrieve the resource at `key` or the reason it failed to acquire. `None`
-    * indicates `key` is unknown to the manager.
+  /** Retrieve the resource at `key`, `None` indicates `key` is unknown.
     *
-    * Semantically blocks until resource acquisition has completed.
+    * Semantically blocks until resource acquisition has terminated.
     */
-  def apply(key: K): F[Option[Either[Throwable, V]]] =
+  def get(key: K): F[Option[V]]
 
-  /** Alias for `apply`. */
-  def get(key: K): F[Option[Either[Throwable, V]]] =
-    apply(key)
+  /** Alias for `get`. */
+  def apply(key: K): F[Option[V]] =
+    get(key)
 
-  /** Retrieve the resource at `key`, returning `None` if `key` is unknown to
-    * the manager.
+  /** Retrieve the resource at `key`, returning `None` if `key` is unknown
+    * or the outcome of resource acquisition otherwise.
     *
-    * Semantically blocks until resource acquisition has completed.
+    * Semantically blocks until resource acquisition has terminated.
     */
-  def join(key: K): F[Option[V]]
+  def join(key: K): F[Option[Outcome[F, Throwable, V]]]
 }
 
-object ResourceMap {
-  /** A `ResourceMap` that eagerly allocates resources on calls to `manage`. */
-  def eager[F[_], K, V]: Resource[F, ResourceMap[F, K, V]] =
-    apply(false)
+object ResourceManager {
+  /** A `ResourceManager` that eagerly allocates resources on calls to `manage`.
+    *
+    * If resource acquisition fails no entry will exist in the manager for the
+    * failed key and the outcome will be reported to any awaiting `join`s.
+    */
+  def eager[F[_], K, V]: Resource[F, ResourceManager[F, K, V]] = ???
 
-  /** A `ResourceMap` that allocates resources on first access. */
-  def lazy[F[_], K, V]: Resource[F, ResourceMap[F, K, V]] =
-    apply(true)
+  /** A `ResourceManager` that allocates resources on first access.
+    *
+    * If resource acquisition fails, it is reported in results of `get` and
+    * `join`. Subsequent access of a resource that failed to acquire will
+    * reattempt acquisition.
+    */
+  def lazy[F[_], K, V]: Resource[F, ResourceManager[F, K, V]] = ???
 
-  private def apply[F[_], K, V](lazyAllocation: Boolean): Resource[F, ResourceMap[F, K, V]] = ???
+  private final class Eager[F[_], K, V](
+      managed: Ref[F, Map[K, EagerResource[F, V]]])(
+      implicit F: MonadCancel[F, Throwable])
+      extends ResourceManager[F, K, V] {
 
-  private final class Impl[F[_], K, V](lazyAllocation: Boolean) extends ResourceMap[F, K, V] {
-    // registered - lazy allocation, 
-    // acquiring
-    //
+    def manage(key: K, resource: Resource[F, V]): F[Unit] = {
+      val id = new Token
 
-    def join(key: K): F[Option[V]] =
-      apply(key).map(_.sequence).rethrow
+      val allocate =
+        F.guaranteeCase(resource.allocated) {
+          case Outcome.Succeeded(fa) =>
+            F.flatMap(fa) {
+              case (v, rel) =>
+                managed.modify { m =>
+                  m.get(key) match {
+                    case Some(Acquiring(`id`, oc
+                }
+
+          case oc =>
+            managed.modify { m =>
+              m.get(key).fold((m, F.unit)) {
+                case Some(Acquiring(`id`, oc, _)) =>
+              }
+            }
+
+          case Outcome.Canceled() =>
+
+          case (v, rel) =>
+            managed.modify { m =>
+              m.get(key) match {
+                case Some(Acquiring(`id`, oc, _)) =>
+              }
+            }
+        } {
+          case ((_, _), Outcome.Succeeded(_)) => F.unit
+          case ((_, rel), _) => rel
+        }
+
+      val updated =
+        F.deferred[Outcome[F, Throwable, V]].flatMap { d =>
+
+            F.flatMap(resource.allocated) {
+              case (v, rel) =>
+
+            }
+
+          managed.modify { m =>
+            m.get(key) match {
+              case None =>
+                (m.updated(key, Acquiring(
+            }
+          }
+        }
+
+      F.uncancelable(_ => F.flatten(updated))
+    }
+
+    // TODO: should we tombstone here instead, to ensure there is only one
+    //       resource acquision happening per-key?
+    def release(key: K): F[Unit] = {
+      val updated = managed.modify { m =>
+        m.get(key).fold((m, F.unit)) {
+          case Acquired(_, r) =>
+            (m - key, F.void(F.attempt(r)))
+
+          case Acquiring(_, oc, c) =>
+            (m - key, F.void(F.attempt(c)) *> oc.complete(Outcome.canceled))
+        }
+      }
+
+      F.uncancelable(_ => F.flatten(updated))
+    }
+
+    def get(key: K): F[Option[V]] =
+      F.flatMap(join(key))(_.flatTraverse {
+        case Outcome.Succeeded(v) => F.map(v)(Some(_))
+        case _ => F.pure(None)
+      })
+
+    def join(key: K): F[Option[Outcome[F, Throwable, V]]] =
+      F.flatMap(managed.get(key))(_.traverse {
+        case Acquired(v, _) => F.pure(Outcome.succeeded(F.pure(v)))
+        case Acquiring(_, oc, _) => oc.get
+      })
   }
 
+  private final class Token()
+
   private sealed trait ManagedResource[F[_], V] extends Product with Serializable
-  private final case class Acquired[F[_], V](resource: V, release: F[Unit]) extends ManagedResource[F, V]
-  private final case class Acquiring[F[_], V](result: Deferred[F, Option[Either[Throwable, V]]], cancel: F[Unit]) extends ManagedResource[F, V]
   private final case class Unacquired[F[_], V](resource: Resource[F, V]) extends ManagedResource[F, V]
+  private sealed trait EagerResource[F[_], V] extends ManagedResource[F, V]
+  private final case class Acquired[F[_], V](value: V, release: F[Unit]) extends EagerResource[F, V]
+  private final case class Acquiring[F[_], V](id: Token, outcome: Deferred[F, Outcome[F, Throwable, V]], cancel: F[Unit]) extends EagerResource[F, V]
 }
